@@ -1,1 +1,1 @@
-# MESA_Active_Learning_Emulator
+# MESA Active Learning Emulator
