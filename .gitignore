@@ -1,2 +1,6 @@
 # Backup Files
 *~
+
+# Python cache directories and bytecode
+__pycache__/
+*.py[cod]
