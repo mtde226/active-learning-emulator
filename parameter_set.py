@@ -6,7 +6,7 @@ import pickle
 from scipy.stats import qmc
 from ActiveLearning.parameter import *
 from copy import deepcopy
-
+import pickle
 
 def recursive_pairing(parameter_dictionary, coord_list=None):
         """
@@ -252,7 +252,7 @@ class ParameterSet:
     # Save / load  (JSON, replaces the old pickle versions)
     # ------------------------------------------------------------------
 
-    def save_parameter_set(self, file_path, parameter_set_name=""):
+    def save_parameter_set(self, file_path, pkl=False, parameter_set_name=""):
         """
         Saves the ParameterSet to a lightweight JSON file (<parameter_set_name>.param_set).
         Each Parameter is serialized via Parameter._to_dict(), so only plain scalars and
@@ -273,10 +273,14 @@ class ParameterSet:
         if len(self.parameters) == 0:
             return None
 
-        data = {name: param._to_dict() for name, param in self.parameters.items()}
-        out_path = file_path + parameter_set_name + ".param_set"
-        with open(out_path, "w") as f:
-            json.dump(data, f, indent=2)
+        if pkl:
+            with open(file_path+parameter_set_name+'.param_set', 'wb') as f:
+                pickle.dump(self, f)
+        else:
+            data = {name: param._to_dict() for name, param in self.parameters.items()}
+            out_path = file_path + parameter_set_name + ".param_set"
+            with open(out_path, "w") as f:
+                json.dump(data, f, indent=2)
 
     def read_parameter_set(file_path):
         """

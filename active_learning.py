@@ -9,7 +9,7 @@ from PTMCMCSampler import PTMCMCSampler
 from ActiveLearning.mesa_training import *
 from ActiveLearning.parameter_set import *
 from copy import deepcopy
-
+import pickle
 
 class ActiveLearning:
     """
@@ -255,7 +255,7 @@ class ActiveLearning:
             self.observational_data = data.copy(deep=True)
 
    
-    def save_ActiveLearning(self, ActiveLearning_name, file_path=""):
+    def save_ActiveLearning(self, ActiveLearning_name, pkl=False, file_path=""):
         """
         Saves the ActiveLearning object to a zip archive
         (<ActiveLearning_name>.active_learner) by delegating each heavy
@@ -284,75 +284,79 @@ class ActiveLearning:
         None
         """
         
+        if pkl:
+            with open(file_path+ActiveLearning_name+'.active_learner', 'wb'):
+                pkl.dump(self, f)
+
+        else:
+            archive_path = os.path.join(file_path, ActiveLearning_name + ".active_learner")
     
-        archive_path = os.path.join(file_path, ActiveLearning_name + ".active_learner")
+            with tempfile.TemporaryDirectory() as tmp:
     
-        with tempfile.TemporaryDirectory() as tmp:
+                # ── 1. ML_Data (MESATraining) ─────────────────────────────────────
+                # save_MESA_Training already produces a self-contained zip archive;
+                # we just embed that archive inside our outer zip.
+                if self.ML_Data is not None:
+                    self.ML_Data.save_MESA_Training("ML_Data", file_path=tmp + os.sep)
     
-            # ── 1. ML_Data (MESATraining) ─────────────────────────────────────
-            # save_MESA_Training already produces a self-contained zip archive;
-            # we just embed that archive inside our outer zip.
-            if self.ML_Data is not None:
-                self.ML_Data.save_MESA_Training("ML_Data", file_path=tmp + os.sep)
+                # ── 2. MESA_parameters (ParameterSet) ─────────────────────────────
+                if self.MESA_parameters is not None:
+                    self.MESA_parameters.save_parameter_set(tmp + os.sep, "MESA_parameters")
     
-            # ── 2. MESA_parameters (ParameterSet) ─────────────────────────────
-            if self.MESA_parameters is not None:
-                self.MESA_parameters.save_parameter_set(tmp + os.sep, "MESA_parameters")
+                # ── 3. observational_data DataFrame ───────────────────────────────
+                if self.observational_data is not None:
+                    self.observational_data.to_parquet(
+                        os.path.join(tmp, "observational_data.parquet"), index=True
+                    )
     
-            # ── 3. observational_data DataFrame ───────────────────────────────
-            if self.observational_data is not None:
-                self.observational_data.to_parquet(
-                    os.path.join(tmp, "observational_data.parquet"), index=True
-                )
+                # ── 4. Scalar / list metadata → JSON ─────────────────────────────
+                def _safe(v):
+                    """Return v if JSON-serializable, else None."""
+                    try:
+                        json.dumps(v)
+                        return v
+                    except (TypeError, ValueError):
+                        return None
     
-            # ── 4. Scalar / list metadata → JSON ─────────────────────────────
-            def _safe(v):
-                """Return v if JSON-serializable, else None."""
-                try:
-                    json.dumps(v)
-                    return v
-                except (TypeError, ValueError):
-                    return None
+                meta = {
+                    "classify":               self.classify,
+                    "regress":                self.regress,
+                    "num_dim":                self.num_dim,
+                    "init_pos":               _safe(
+                        self.init_pos.tolist()
+                        if hasattr(self.init_pos, "tolist")
+                        else self.init_pos
+                    ),
+                    "covariance":             _safe(
+                        self.covariance.tolist()
+                        if hasattr(self.covariance, "tolist")
+                        else self.covariance
+                    ),
+                    "burnin":                 self.burnin,
+                    "num_samples":            self.num_samples,
+                    "output_directory":       self.output_directory,
+                    "obs_data_cols":          self.obs_data_cols,
+                    "obs_err_cols":           self.obs_err_cols,
+                    "data_prior_scaling":     self.data_prior_scaling,
+                    "obs_likelihood_scaling": self.obs_likelihood_scaling,
+                    "classify_scaling":       self.classify_scaling,
+                    "regress_scaling":        self.regress_scaling,
+                    "track_error":            self.track_error,
+                    "error_values":           _safe(
+                        getattr(self, "error_values", None)
+                    ),
+                }
     
-            meta = {
-                "classify":               self.classify,
-                "regress":                self.regress,
-                "num_dim":                self.num_dim,
-                "init_pos":               _safe(
-                    self.init_pos.tolist()
-                    if hasattr(self.init_pos, "tolist")
-                    else self.init_pos
-                ),
-                "covariance":             _safe(
-                    self.covariance.tolist()
-                    if hasattr(self.covariance, "tolist")
-                    else self.covariance
-                ),
-                "burnin":                 self.burnin,
-                "num_samples":            self.num_samples,
-                "output_directory":       self.output_directory,
-                "obs_data_cols":          self.obs_data_cols,
-                "obs_err_cols":           self.obs_err_cols,
-                "data_prior_scaling":     self.data_prior_scaling,
-                "obs_likelihood_scaling": self.obs_likelihood_scaling,
-                "classify_scaling":       self.classify_scaling,
-                "regress_scaling":        self.regress_scaling,
-                "track_error":            self.track_error,
-                "error_values":           _safe(
-                    getattr(self, "error_values", None)
-                ),
-            }
+                with open(os.path.join(tmp, "meta.json"), "w") as f:
+                    json.dump(meta, f, indent=2)
     
-            with open(os.path.join(tmp, "meta.json"), "w") as f:
-                json.dump(meta, f, indent=2)
-    
-            # ── 5. Pack everything into a single zip ──────────────────────────
-            with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for root, dirs, files in os.walk(tmp):
-                    for file in files:
-                        abs_path = os.path.join(root, file)
-                        arc_name = os.path.relpath(abs_path, tmp)
-                        zf.write(abs_path, arc_name)
+                # ── 5. Pack everything into a single zip ──────────────────────────
+                with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for root, dirs, files in os.walk(tmp):
+                        for file in files:
+                            abs_path = os.path.join(root, file)
+                            arc_name = os.path.relpath(abs_path, tmp)
+                            zf.write(abs_path, arc_name)
  
  
     def read_ActiveLearning(file_path):

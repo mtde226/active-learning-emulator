@@ -228,7 +228,7 @@ class Parameter:
     # Public save / load  (JSON, replaces the old pickle versions)
     # ------------------------------------------------------------------
 
-    def save_parameter(self, file_path=""):
+    def save_parameter(self, pkl=False, file_path=""):
         """
         Saves the Parameter to a lightweight JSON file (<param_name>.param).
         This replaces the previous pickle-based implementation and uses orders
@@ -247,9 +247,13 @@ class Parameter:
         if self.param_name is None:
             return None
 
-        out_path = file_path + str(self.param_name) + ".param"
-        with open(out_path, "w") as f:
-            json.dump(self._to_dict(), f, indent=2)
+        if pkl:
+            with open(file_path+str(self.param_name)+'.param', 'wb') as f:
+                pickle.dump(self, f)
+        else:
+            out_path = file_path + str(self.param_name) + ".param"
+            with open(out_path, "w") as f:
+                json.dump(self._to_dict(), f, indent=2)
 
     def read_parameter(self, file_path):
         """

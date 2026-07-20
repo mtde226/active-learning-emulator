@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from tensorflow.keras import metrics
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 import copy
+import pickle
 
 import os
 import json
@@ -453,7 +454,7 @@ class MESATraining:
         self.set_parameter_columns(parameter_columns)
 
         
-    def save_MESA_Training(self, MESATraining_name, file_path=""):
+    def save_MESA_Training(self, MESATraining_name, pkl=False, file_path=""):
         """
         Saves the MESATraining object to a zip archive (<MESATraining_name>.training_set)
         that contains one sub-file per logical component, each stored in its most
@@ -489,87 +490,82 @@ class MESATraining:
         None
         """
 
-        archive_path = os.path.join(file_path, MESATraining_name + ".training_set")
+        if pkl:
+            with open(file_path+MESATraining_name+'.training_set', 'wb') as f:
+                pickle.dump(self, f)
+        else:
+            archive_path = os.path.join(file_path, MESATraining_name + ".training_set")
  
-        with tempfile.TemporaryDirectory() as tmp:
+            with tempfile.TemporaryDirectory() as tmp:
  
-            # ── 1. DataFrames ────────────────────────────────────────────────
-            for attr, fname in [
-                ("dataset",         "dataset.parquet"),
-                ("train_residuals", "train_residuals.parquet"),
-                ("val_residuals",   "val_residuals.parquet"),
-                ("test_residuals",  "test_residuals.parquet"),
-            ]:
-                df = getattr(self, attr, None)
-                if df is not None and not df.empty:
-                    df.to_parquet(os.path.join(tmp, fname), index=True)
+                # ── 1. DataFrames ────────────────────────────────────────────────
+                for attr, fname in [
+                        ("dataset",         "dataset.parquet"),
+                        ("train_residuals", "train_residuals.parquet"),
+                        ("val_residuals",   "val_residuals.parquet"),
+                        ("test_residuals",  "test_residuals.parquet"),
+                ]:
+                    df = getattr(self, attr, None)
+                    if df is not None and not df.empty:
+                        df.to_parquet(os.path.join(tmp, fname), index=True)
  
-            # ── 2. ML models ─────────────────────────────────────────────────
-            self._save_models(tmp)
+                # ── 2. ML models ─────────────────────────────────────────────────
+                self._save_models(tmp)
  
-            # ── 3. regressor_error_dist (arrays keyed by regression column) ──
-            if self.regressor_error_dist:
-                np.savez(
-                    os.path.join(tmp, "regressor_error_dist.npz"),
-                    **{col: arr for col, arr in self.regressor_error_dist.items()}
-                )
+                # ── 3. regressor_error_dist (arrays keyed by regression column) ──
+                if self.regressor_error_dist:
+                    np.savez(
+                        os.path.join(tmp, "regressor_error_dist.npz"),
+                        **{col: arr for col, arr in self.regressor_error_dist.items()}
+                    )
  
-            # ── 4. ParameterSet (uses its own JSON serializer) ───────────────
-            if self.MESA_Parameters is not None:
-                self.MESA_Parameters.save_parameter_set(tmp + os.sep, "MESA_Parameters")
+                # ── 4. ParameterSet (uses its own JSON serializer) ───────────────
+                if self.MESA_Parameters is not None:
+                    self.MESA_Parameters.save_parameter_set(tmp + os.sep, "MESA_Parameters")
  
-            # ── 5. Everything else as JSON ───────────────────────────────────
-            def _index_to_list(idx):
-                """pandas Index → plain Python list for JSON."""
-                return None if idx is None else list(idx)
+                # ── 5. Everything else as JSON ───────────────────────────────────
+                def _index_to_list(idx):
+                    """pandas Index → plain Python list for JSON."""
+                    return None if idx is None else list(idx)
  
-            meta = {
-                # column lists
-                "parameter_columns":      self.parameter_columns,
-                "classification_columns": self.classification_columns,
-                "regression_columns":     self.regression_columns,
-                # normalisation dict  (values are [min, max] floats — JSON-safe)
-                "normalise_dict": getattr(self, "normalise_dict", None),
-                # scalar metrics
-                "classification_error_accuracy": self.classification_error_accuracy,
-                "classifier_accuracy":           self.classifier_accuracy,
-                "regressor_error_rmse":          self.regressor_error_rmse,
-                # mode strings
-                "classifier_mode":   getattr(self, "classifier_mode",   None),
-                "regressor_mode":    getattr(self, "regressor_mode",     None),
-                "interpolator_type": getattr(self, "interpolator_type",  None),
-                "resample_flag":     getattr(self, "resample_flag",      None),
-                "num_classes":       getattr(self, "num_classes",        None),
-                # train/val/test index splits (stored as lists)
-                "train_classifier": _index_to_list(getattr(self, "train_classifier", None)),
-                "val_classifier":   _index_to_list(getattr(self, "val_classifier",   None)),
-                "test_classifier":  _index_to_list(getattr(self, "test_classifier",  None)),
-                "y_train_classifier": _index_to_list(getattr(self, "y_train_classifier", None)),
-                "y_val_classifier":   _index_to_list(getattr(self, "y_val_classifier",   None)),
-                "y_test_classifier":  _index_to_list(getattr(self, "y_test_classifier",  None)),
-                "train_regressor":  _index_to_list(getattr(self, "train_regressor",  None)),
-                "val_regressor":    _index_to_list(getattr(self, "val_regressor",    None)),
-                "test_regressor":   _index_to_list(getattr(self, "test_regressor",   None)),
-                "y_train_regressor": _index_to_list(getattr(self, "y_train_regressor", None)),
-                "y_val_regressor":   _index_to_list(getattr(self, "y_val_regressor",   None)),
-                "y_test_regressor":  _index_to_list(getattr(self, "y_test_regressor",  None)),
-                # regressor_error_dist: values may be scipy frozen-dist objects;
-                # those are not JSON-serializable, so we skip them here.
-                # Re-derive from the dataset after loading if needed.
-            }
+                meta = {
+                    # column lists
+                    "parameter_columns":      self.parameter_columns,
+                    "classification_columns": self.classification_columns,
+                    "regression_columns":     self.regression_columns,
+                    # normalisation dict  (values are [min, max] floats — JSON-safe)
+                    "normalise_dict": getattr(self, "normalise_dict", None),
+                    # scalar metrics
+                    "classification_error_accuracy": self.classification_error_accuracy,
+                    "classifier_accuracy":           self.classifier_accuracy,
+                    "regressor_error_rmse":          self.regressor_error_rmse,
+                    # mode strings
+                    "classifier_mode":   getattr(self, "classifier_mode",   None),
+                    "regressor_mode":    getattr(self, "regressor_mode",     None),
+                    "interpolator_type": getattr(self, "interpolator_type",  None),
+                    "resample_flag":     getattr(self, "resample_flag",      None),
+                    "num_classes":       getattr(self, "num_classes",        None),
+                    # train/val/test index splits (stored as lists)
+                    "y_train_classifier": _index_to_list(getattr(self, "y_train_classifier", None)),
+                    "y_val_classifier":   _index_to_list(getattr(self, "y_val_classifier",   None)),
+                    "y_test_classifier":  _index_to_list(getattr(self, "y_test_classifier",  None)),
+                    "y_train_regressor": _index_to_list(getattr(self, "y_train_regressor", None)),
+                    "y_val_regressor":   _index_to_list(getattr(self, "y_val_regressor",   None)),
+                    "y_test_regressor":  _index_to_list(getattr(self, "y_test_regressor",  None)),
+                }
+                
+                with open(os.path.join(tmp, "meta.json"), "w") as f:
+                    json.dump(meta, f, indent=2)
  
-            with open(os.path.join(tmp, "meta.json"), "w") as f:
-                json.dump(meta, f, indent=2)
- 
-            # ── 6. Pack everything into a zip archive ─────────────────────────
-            # We use ZIP_DEFLATED (gzip) which adds ~10-30 % further size
-            # reduction on top of Parquet's internal compression.
-            with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for root, dirs, files in os.walk(tmp):
-                    for file in files:
-                        abs_path = os.path.join(root, file)
-                        arc_name = os.path.relpath(abs_path, tmp)
-                        zf.write(abs_path, arc_name)
+                # ── 6. Pack everything into a zip archive ─────────────────────────
+                # We use ZIP_DEFLATED (gzip) which adds ~10-30 % further size
+                # reduction on top of Parquet's internal compression.
+                with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for root, dirs, files in os.walk(tmp):
+                        for file in files:
+                            abs_path = os.path.join(root, file)
+                            arc_name = os.path.relpath(abs_path, tmp)
+                            zf.write(abs_path, arc_name)
  
  
     def read_MESA_Training(file_path):
@@ -629,15 +625,9 @@ class MESATraining:
                 import pandas as pd
                 return None if lst is None else pd.Index(lst)
  
-            obj.train_classifier   = _list_to_index(meta.get("train_classifier"))
-            obj.val_classifier     = _list_to_index(meta.get("val_classifier"))
-            obj.test_classifier    = _list_to_index(meta.get("test_classifier"))
             obj.y_train_classifier = _list_to_index(meta.get("y_train_classifier"))
             obj.y_val_classifier   = _list_to_index(meta.get("y_val_classifier"))
             obj.y_test_classifier  = _list_to_index(meta.get("y_test_classifier"))
-            obj.train_regressor    = _list_to_index(meta.get("train_regressor"))
-            obj.val_regressor      = _list_to_index(meta.get("val_regressor"))
-            obj.test_regressor     = _list_to_index(meta.get("test_regressor"))
             obj.y_train_regressor  = _list_to_index(meta.get("y_train_regressor"))
             obj.y_val_regressor    = _list_to_index(meta.get("y_val_regressor"))
             obj.y_test_regressor   = _list_to_index(meta.get("y_test_regressor"))
@@ -1142,7 +1132,6 @@ class MESATraining:
             self.classifier_accuracy = model.evaluate(test_dataset)[1]
             self.classifier = model
             
-            
         elif mode == 'random_forest':
             self.classifier_mode = 'random_forest'
             model = RandomForestClassifier(n_estimators=5)
@@ -1256,6 +1245,7 @@ class MESATraining:
             if classifier_class != None:
                 self.train_regressor_indices, self.test_regressor_indices = train_test_split(self.dataset[self.dataset[classifier_column] == classifier_class].index, train_size=training)
                 self.test_regressor_indices, self.val_regressor_indices = train_test_split(self.test_regressor_indices, train_size=validation)
+
             else:
                 self.train_regressor_indices, self.test_regressor_indices = train_test_split(self.dataset.index, train_size=training)
                 self.test_regressor_indices, self.val_regressor_indices = train_test_split(self.test_regressor_indices, train_size=validation)
@@ -1302,8 +1292,7 @@ class MESATraining:
                         train_dataset = train_dataset.shuffle(42).batch(32).prefetch(tf.data.AUTOTUNE)
                     else:
                         train_dataset = train_dataset.batch(tf_fit_kwargs['batch_size']).prefetch(tf.data.AUTOTUNE)
-
-
+                        
                     val_dataset = tf.data.Dataset.from_tensor_slices((self.dataset[self.parameter_columns].loc[self.val_regressor_indices].to_numpy(), self.dataset[self.regression_columns[i]].loc[self.val_regressor_indices].to_numpy()))
                     val_dataset = val_dataset.batch(4096).prefetch(tf.data.AUTOTUNE)
 
@@ -1311,8 +1300,8 @@ class MESATraining:
                     test_dataset = test_dataset.batch(4096).prefetch(tf.data.AUTOTUNE)
                     
                     history = self.regressor[self.regression_columns[i]].fit(train_dataset, callbacks=callbacks, validation_data=val_dataset, **tf_fit_kwargs)
-        
-                    test_prediction = self.regressor[self.regression_columns[i]](test_dataset)
+                    
+                    test_prediction = self.regressor[self.regression_columns[i]].predict(test_dataset)
                     denorm_data = self.denormalise_regression_predictions(test_prediction, self.regression_columns[i]) # This yields a numpy array
                     y_test = self.denormalise_regression_predictions(copy.deepcopy(self.dataset[self.regression_columns[i]].loc[self.test_regressor_indices].to_numpy()), self.regression_columns[i]).reshape(-1, 1)
                     self.regressor_error_rmse[self.regression_columns[i]] = mean_squared_error(y_test, denorm_data, squared=False)
