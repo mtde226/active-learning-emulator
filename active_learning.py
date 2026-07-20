@@ -114,7 +114,6 @@ class ActiveLearning:
         self.covariance = None
         self.burnin = 5000
         self.num_samples = 10000
-        # self.num_effective = 10000
         self.output_directory = output_directory
         self.obs_data_cols = None
         self.obs_err_cols = None
@@ -123,8 +122,7 @@ class ActiveLearning:
         self.classify_scaling = 1
         self.regress_scaling = 1
         self.track_error=False
-        
-       
+
         if directory != None:
             self.load_class(filepath=directory)
 
@@ -137,11 +135,16 @@ class ActiveLearning:
             
         if 'ML_Dir' in kwargs:
             self.import_ML_Data(kwargs['ML_Dir'])
-       
+
         if 'ML_Data' in kwargs.keys():
             self.ML_Data = kwargs['ML_Data']
             try:
-                self.covariance = np.cov(self.ML_Data.dataset.query('Class == 0').sample(frac=0.1)[self.ML_Data.parameter_columns].to_numpy())
+                data_matrix = self.ML_Data.dataset.query('Class == 0')[self.ML_Data.parameter_columns].to_numpy()
+                n_rows = len(self.ML_Data.parameter_columns)
+                means = np.mean(data_matrix, axis=0)
+                center = data_matrix - means
+                self.covariance = np.dot(center.T, center) / (nrows - 1)
+                print("SUCCESS")
             except:
                 matrix = np.zeros((len(self.ML_Data.parameter_columns), len(self.ML_Data.parameter_columns)))
                 for i in range(0, len(self.ML_Data.parameter_columns)):
@@ -174,9 +177,6 @@ class ActiveLearning:
 
         if 'nsamples' in kwargs:
             self.num_samples = kwargs['nsamples']
-
-        if 'neffective' in kwargs:
-            self.num_effective = kwargs['neffective']
 
         if 'track_error' in kwargs:
             self.track_error = kwargs['track_error']
