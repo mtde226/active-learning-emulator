@@ -7,51 +7,7 @@ from scipy.stats import qmc
 from ActiveLearning.parameter import *
 from copy import deepcopy
 import pickle
-
-def recursive_pairing(parameter_dictionary, coord_list=None):
-        """
-        Recursively generates all possible combinations of parameter values from a dictionary
-        of parameter arrays. Creates a Cartesian product of all parameter value sets. Handles
-        single parameter case, two parameter base case, and recursive combination for multiple
-        parameters. Used internally by generate_datapoints for grid sampling.
-
-        Parameters
-        ----------
-        parameter_dictionary : dict
-            Dictionary of parameter names and their value arrays
-        coord_list : list, optional
-            Current list of coordinate combinations for recursion. Default is None.
-
-        Returns
-        -------
-            list: List of coordinate arrays representing all parameter value combinations            
-        """
-
-
-        
-        if coord_list==None and len(parameter_dictionary.keys())==1:
-            key1 = list(parameter_dictionary.keys())[0]
-            values1 = parameter_dictionary.pop(key1)
-            coordinates = [[x] for x in values1]
-            return coordinates
-        elif coord_list==None:
-            key1 = list(parameter_dictionary.keys())[0]
-            key2 = list(parameter_dictionary.keys())[1]
-            values1 = parameter_dictionary.pop(key1)
-            values2 = parameter_dictionary.pop(key2)
-            coordinates = [[x, y] for x in values1 for y in values2]
-            if len(parameter_dictionary.keys()):
-                return recursive_pairing(parameter_dictionary, coord_list=coordinates)
-            else:
-                return coordinates
-        else:
-            key1 = list(parameter_dictionary.keys())[0]
-            values1 = parameter_dictionary.pop(key1)
-            coordinates = [[*y, x] for y in coord_list for x in values1]
-            if len(parameter_dictionary.keys()):
-                return recursive_pairing(parameter_dictionary, coord_list=coordinates)
-            else:
-                return coordinates
+from utils import *
 
 
 class ParameterSet:
@@ -109,10 +65,9 @@ class ParameterSet:
         -------
         None            
         """
+        
+        self._parameters = parameters
 
-        
-        self.parameters = parameters
-        
         
     def specify_parameters(self, parameters):
         """
@@ -128,16 +83,13 @@ class ParameterSet:
         Returns
         -------
         None
-        """
-
-        
-        self.parameters = {}
-        
+        """       
+        self._parameters = {}        
         for param in parameters:
-            self.parameters[param.param_name] = param
+            self._parameters[param.param_name] = param
 
 
-    def add_parameters(self, parameters):
+    def add_parameter(self, param):
         """
         Adds new parameters to the existing parameter set without removing current parameters.
         Uses parameter names as dictionary keys. If a parameter with the same name already exists,
@@ -146,19 +98,17 @@ class ParameterSet:
         Parameters
         ----------
         parameters : list
-            List of Parameter objects to add to the existing set
+            Parameter object to add to the existing set
 
         Returns
         -------
         None
         """
-
+        self._parameters[param.param_name] = param
+        return None
+    
         
-        for param in parameters:
-            self.parameters[param.param_name] = param
-        
-        
-    def generate_datapoints(self, spacing="grid", param_step_dict={}, num_samples=None, seed=None):
+    def generate_datapoints(self, num_samples=None, steps_per_dim=None, spacing="grid", param_step_dict=None, seed=None):
         """
         Generates parameter value combinations using either grid sampling or Latin Hypercube sampling.
         Grid sampling creates all possible combinations of parameter values. LHC sampling generates
@@ -186,55 +136,64 @@ class ParameterSet:
         This method currently does not support categorical variables. For these it is currently advised to simply create a class for each 
         value of the categorical variable pending completion of this upgrade.
         """
-
-        
         # TODO: Fix for Categorical Parameters
+
+
         if spacing == "grid":
+            if param_step_dict is None and num_samples is None and steps_per_dim is None:
+                raise ValueError("Either num_samples and ratio_of_steps or param_step_dict must be passed")
+
+            elif param_step_dict is None and num_samples is not None and steps_per_dim is not None:
+                param_step_dict = {}
+
+                for param, steps in zip(self, steps_per_dim):
+                    param_step_dict[param.param_name] = steps
+
             param_dict = {}
-            for key in self.parameters:
-                if self.parameters[key].continuous:
-                    param_dict[key] = self.parameters[key].generate_grid(param_step_dict[key])
+            for param in self:
+                if param.continuous:
+                    param_dict[param.param_name] = param.generate_grid(param_step_dict[param.param_name])
                 else:
-                    param_dict[key] = self.parameters[key].generate_grid()
+                    param_dict[param.param_name] = param.generate_grid()
 
             data = recursive_pairing(param_dict)
 
                 
         elif spacing == "LHC":
-            sampler = qmc.LatinHypercube(d=len(self.parameters), optimization="random-cd", seed=seed)
+            sampler = qmc.LatinHypercube(d=len(self._parameters), optimization="random-cd", seed=seed)
 
             sample = sampler.random(num_samples)
-                       
+            
             u_bounds = []
             l_bounds = []
 
             discrete = []
             log_spacing = []
             
-            for key in self.parameters:
-                if self.parameters[key].continuous == False:
-                    u_bounds.append(len(self.parameters[key].discrete_steps))
+            for param in self:
+                if param.continuous == False:
+                    u_bounds.append(len(param.discrete_steps))
                     l_bounds.append(0)
                     discrete.append(True)
                 else:
-                    u_bounds.append(self.parameters[key].u_bound)
-                    l_bounds.append(self.parameters[key].l_bound)
+                    u_bounds.append(param.u_bound)
+                    l_bounds.append(param.l_bound)
                     discrete.append(False)
 
-                log_spacing.append(self.parameters[key].log_space)
-                if self.parameters[key].log_space:
+                log_spacing.append(param.log_space)
+                if param.log_space:
                     u_bounds[-1] = np.log10(u_bounds[-1])
                     l_bounds[-1] = np.log10(l_bounds[-1])
 
 
             scaled_sample = qmc.scale(sample, l_bounds, u_bounds)
-            key_list = list(self.parameters)
-                
-            for i in range(len(self.parameters)):
+            key_list = list(self._parameters)
+            
+            for i in range(len(self._parameters)):
                 if discrete[i]:
                     scaled_sample[:, i] = np.floor(scaled_sample[:, i]).astype(int)
-                    for j in range(len(self.parameters[key_list[i]].discrete_steps)):
-                        scaled_sample[:, i][scaled_sample[:, i] == j] = self.parameters[key_list[i]].discrete_steps[j]
+                    for j in range(len(self._parameters[key_list[i]].discrete_steps)):
+                        scaled_sample[:, i][scaled_sample[:, i] == j] = self._parameters[key_list[i]].discrete_steps[j]
                         
                 if log_spacing[i]:
                     scaled_sample[:, i] = 10**scaled_sample[:, i]
@@ -270,17 +229,20 @@ class ParameterSet:
         -------
         None
         """
-        if len(self.parameters) == 0:
+        if len(self._parameters) == 0:
             return None
 
         if pkl:
             with open(file_path+parameter_set_name+'.param_set', 'wb') as f:
                 pickle.dump(self, f)
         else:
-            data = {name: param._to_dict() for name, param in self.parameters.items()}
+            data = {name: param._to_dict() for name, param in self._parameters.items()}
             out_path = file_path + parameter_set_name + ".param_set"
             with open(out_path, "w") as f:
                 json.dump(data, f, indent=2)
+
+        return None
+
 
     def read_parameter_set(file_path):
         """
@@ -305,7 +267,7 @@ class ParameterSet:
         if header == b"{":
             with open(file_path, "r") as f:
                 raw = json.load(f)
-            params = {name: Parameter._from_dict(d) for name, d in raw.items()}
+                params = {name: Parameter._from_dict(d) for name, d in raw.items()}
             return ParameterSet(parameters=params)
         else:
             # Legacy pickle fallback
@@ -332,8 +294,10 @@ class ParameterSet:
         
         for filename in file_list:
             temp = Parameter().read_parameter(filename)
-            self.parameters[temp.param_name] = temp
-        
+            self._parameters[temp.param_name] = temp
+
+        return None
+
 
     def collective_prior(self, datapoint, uniform_override=False):
         """
@@ -356,11 +320,10 @@ class ParameterSet:
 
         
         logp = 0
-        keys = list(self.parameters.keys())
-        for i in range(len(self.parameters)):
-            logp += self.parameters[keys[i]].log_prior(datapoint[i], uniform_override=uniform_override)
+        for param in self:
+            logp += param.log_prior(datapoint[i], uniform_override=uniform_override)
         return logp
-            
+    
 
     def group_midpoints(self):
         """
@@ -380,19 +343,41 @@ class ParameterSet:
         """
 
         
-        pos = np.zeros((len(self.parameters)))
-        keys = list(self.parameters.keys())
-        for i in range(len(self.parameters)):
-            if np.isfinite(self.parameters[keys[i]].l_bound) and np.isfinite(self.parameters[keys[i]].u_bound):
-                pos[i] = self.parameters[keys[i]].l_bound + (self.parameters[keys[i]].u_bound - self.parameters[keys[i]].l_bound) / 2
-            elif np.isfinite(self.parameters[keys[i]].l_bound) and not np.isfinite(self.parameters[keys[i]].u_bound):
-                pos[i] = self.parameters[keys[i]].l_bound
-            elif not np.isfinite(self.parameters[keys[i]].l_bound) and np.isfinite(self.parameters[keys[i]].u_bound):
-                pos[i] = self.parameters[keys[i]].u_bound    
+        pos = np.zeros((self.num_parameters()))
+        for param in self)):
+            if np.isfinite(param.l_bound) and np.isfinite(param.u_bound):
+                pos[i] = param.l_bound + (param.u_bound - param.l_bound) / 2
+            elif np.isfinite(param.l_bound) and not np.isfinite(param.u_bound):
+                pos[i] = param.l_bound
+            elif not np.isfinite(param.l_bound) and np.isfinite(param.u_bound):
+                pos[i] = param.u_bound    
             else:
                 pos[i] = 0
         return pos
-                
+
+
+    def get_bounds(self):
+        """
+
+
+        """
+        bounds = []
+        for param in self:
+            temp = []
+            if np.isfinite(param.l_bound):
+                temp.append(param.l_bound)
+            else:
+                temp.append(None)
+
+            if np.isfinite(param.u_bound):
+                temp.append(param.u_bound)
+            else:
+                temp.append(None)
+                bounds.append(temp)
+
+        bounds = np.array(bounds)
+        return bounds
+
 
     def num_parameters(self):
         """
@@ -408,12 +393,23 @@ class ParameterSet:
         int 
             Number of parameters in the parameter set
         """
+        return len(self._parameters)
 
 
-        return len(self.parameters)
+    def num_continuous_parameters(self):
+        """
 
 
-    def param_names(self):
+        """
+        count = 0
+        for param in self:
+            if param.continuous:
+                count += 1
+        return count
+
+
+
+    def get_param_names(self):
         """
         Returns a list of parameter names from all Parameter objects in the set. Note: There
         appears to be a bug in the original code - it accesses param.name instead of 
@@ -427,12 +423,10 @@ class ParameterSet:
         -------
         list
             List of parameter names
-        """
-        
-        
+        """        
         names = []
-        for key in self.parameters:
-            names.append(self.parameters[key].param_name)
+        for param in self:
+            names.append(param.param_name)
         return names
 
 
@@ -451,14 +445,19 @@ class ParameterSet:
         str
             Tab character (after printing parameter information)            
         """
-
-
-        
-        for param in self.parameters:
-            print(self.parameters[param])
+        for param in self:
+            print(param)
         return "\t"
-    
 
+
+    def __iter__(self):
+        """
+
+
+        """
+        return iter(self._parameters)
+    
+                
 def test_init():
     """
     Test function for ParameterSet initialization. Loads three parameter files (mass, helium,
@@ -516,7 +515,7 @@ def test_specify_parameters():
     print(test_set)
     test_set.save_parameter_set("test")
     return None
-    
+
 
 def test_add_parameter():
     """

@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 import numpy as np
+import math
 import random
 from scipy import stats, signal, integrate
 
@@ -10,6 +11,8 @@ from ActiveLearning.mesa_training import *
 from ActiveLearning.parameter_set import *
 from copy import deepcopy
 import pickle
+
+from utils import *
 
 class ActiveLearning:
     """
@@ -25,7 +28,7 @@ class ActiveLearning:
     ----------
     MESA_parameters : ParameterSet or None
         Prior parameter ranges and distributions.
-    ML_Data : MESATraining or None
+    ml_data : MESATraining or None
         Normalised dataset, classifier, regressor, and residual interpolators.
     observational_data : pd.DataFrame or None
         Observational targets used in the likelihood.
@@ -39,10 +42,6 @@ class ActiveLearning:
         Initial position for the MCMC sampler.
     covariance : np.ndarray or None
         Proposal covariance matrix for the MCMC sampler.
-    burnin : int
-        Number of burn-in steps (default 5000).
-    num_samples : int
-        Total number of MCMC samples to draw (default 10000).
     output_directory : str
         Directory where sampler output files are written.
     obs_data_cols : list of str or None
@@ -84,36 +83,20 @@ class ActiveLearning:
             Param_Data : ParameterSet
                 Pre-built ParameterSet (used directly, skips file I/O).
             ML_Dir : str
-                Path to a .training_set archive; loaded via import_ML_Data.
-            ML_Data : MESATraining
+                Path to a .training_set archive; loaded via import_ml_data.
+            ml_data : MESATraining
                 Pre-built MESATraining object (used directly, skips file I/O).
             Obs_Dir : str
                 Path to an observational data file; loaded via import_Observational_Data.
-            pos : array-like
-                Explicit initial MCMC position vector.
-            cov : np.ndarray
-                Explicit proposal covariance matrix.
-            nburn : int
-                Number of burn-in steps (overrides default of 5000).
-            nwalkers : int
-                Number of parallel MCMC walkers.
-            nsamples : int
-                Total number of MCMC samples (overrides default of 10000).
-            neffective : int
-                Target number of effective samples.
             track_error : bool
                 If True, record ML residual errors during sampling.
         """
-        self.MESA_parameters = None # A parameter set
-        self.ML_Data = None # The final data
+        self.mesa_parameters = None # A parameter set
+        self.ml_data = None # The final data
         self.observational_data = None 
         self.classify = classify
         self.regress = regress
         self.num_dim = None
-        self.init_pos = None
-        self.covariance = None
-        self.burnin = 5000
-        self.num_samples = 10000
         self.output_directory = output_directory
         self.obs_data_cols = None
         self.obs_err_cols = None
@@ -126,43 +109,35 @@ class ActiveLearning:
         if directory != None:
             self.load_class(filepath=directory)
 
-        if 'Param_Dir' in kwargs.keys():
-            self.import_MESA_Parameters(kwargs['Param_Dir'])
+        if 'param_dir' in kwargs.keys():
+            self.import_MESA_Parameters(kwargs['param_dir'])
 
-        if 'Param_Data' in kwargs.keys():
-            self.MESA_parameters = kwargs['Param_Data']
-            self.num_dim = self.MESA_parameters.num_parameters()
+        if 'param_data' in kwargs.keys():
+            self.mesa_parameters = kwargs['param_data']
+            self.num_dim = self.mesa_parameters.num_parameters()
             
-        if 'ML_Dir' in kwargs:
-            self.import_ML_Data(kwargs['ML_Dir'])
+        if 'ml_dir' in kwargs:
+            self.import_ml_data(kwargs['ml_dir'])
 
-        if 'ML_Data' in kwargs.keys():
-            self.ML_Data = kwargs['ML_Data']
+        if 'ml_data' in kwargs.keys():
+            self.ml_data = kwargs['ml_data']
             try:
-                data_matrix = self.ML_Data.dataset.query('Class == 0')[self.ML_Data.parameter_columns].to_numpy()
-                n_rows = len(self.ML_Data.parameter_columns)
+                data_matrix = self.ml_data.dataset.query('Class == 0')[self.ml_data.parameter_columns].to_numpy()
+                n_rows = len(self.ml_data.parameter_columns)
                 means = np.mean(data_matrix, axis=0)
                 center = data_matrix - means
                 self.covariance = np.dot(center.T, center) / (nrows - 1)
                 print("SUCCESS")
             except:
-                matrix = np.zeros((len(self.ML_Data.parameter_columns), len(self.ML_Data.parameter_columns)))
-                for i in range(0, len(self.ML_Data.parameter_columns)):
-                    matrix[i, i] = np.var(self.ML_Data.dataset[self.ML_Data.parameter_columns[i]])
-                    matrix[i-1, i] = self.ML_Data.dataset[self.ML_Data.parameter_columns[i]].cov(self.ML_Data.dataset[self.ML_Data.parameter_columns[i-1]])
+                matrix = np.zeros((len(self.ml_data.parameter_columns), len(self.ml_data.parameter_columns)))
+                for i in range(0, len(self.ml_data.parameter_columns)):
+                    matrix[i, i] = np.var(self.ml_data.dataset[self.ml_data.parameter_columns[i]])
+                    matrix[i-1, i] = self.ml_data.dataset[self.ml_data.parameter_columns[i]].cov(self.ml_data.dataset[self.ml_data.parameter_columns[i-1]])
                     matrix[i, i-1] = matrix[i, i-1]
                 self.covariance = copy.deepcopy(matrix)
                 
         if 'Obs_Dir' in kwargs:
             self.import_Observational_Data(kwargs['Obs_Dir'])
-
-        if 'pos' in kwargs:
-            self.init_pos = kwargs['pos']
-        elif self.MESA_parameters:
-            self.init_pos = self.ML_Data.normalise_data(data_point=self.MESA_parameters.group_midpoints(), parameters=True)
-        else:
-            self.init_pos = []
-
         if 'cov' in kwargs:
             self.covariance = kwargs['cov']
             # elif calculate from parameterset            
@@ -184,7 +159,7 @@ class ActiveLearning:
         if self.track_error:
             self.error_values = []
 
-    def import_MESA_Parameters(self, data_path):
+    def import_mesa_parameters(self, data_path):
         """
         Load a ParameterSet from a .param_set file and store it on the instance.
 
@@ -199,11 +174,11 @@ class ActiveLearning:
         -------
         None
         """
-        self.MESA_parameters = Parameter_Set().read_parameter_set(data_path)
-        self.num_dim = MESA_parameters.num_parameters()
+        self.mesa_parameters = Parameter_Set().read_parameter_set(data_path)
+        self.num_dim = mesa_parameters.num_parameters()
         
 
-    def import_ML_Data(self, data_path):
+    def import_ml_data(self, data_path):
         """
         Load a MESATraining dataset from a .training_set archive and store it
         on the instance.
@@ -219,11 +194,11 @@ class ActiveLearning:
         Returns
         -------
         None
-        """
-        self.ML_Data = MESA_Training.read_MESA_Training(filepath=data_path)
-        self.covariance = np.cov(self.ML_Data.dataset[self.ML_Data.parameter_columns].to_numpy())        
+        """        
+        self.ml_data = MESA_Training.read_MESA_Training(filepath=data_path)
+        self.covariance = np.cov(self.ml_data.dataset[self.ml_data.parameter_columns].to_numpy())        
 
-    def import_Observational_Data(self, observational_columns, error_columns, data=None, data_path=None, read=False, pandas_kwargs={}):
+    def import_observational_data(self, observational_columns, error_columns, data=None, data_path=None, read=False, pandas_kwargs={}):
         """
         Set the observational data used in likelihood evaluations.
 
@@ -255,15 +230,15 @@ class ActiveLearning:
             self.observational_data = data.copy(deep=True)
 
    
-    def save_ActiveLearning(self, ActiveLearning_name, pkl=False, file_path=""):
+    def save_active_learning(self, ActiveLearning_name, pkl=False, file_path=""):
         """
         Saves the ActiveLearning object to a zip archive
         (<ActiveLearning_name>.active_learner) by delegating each heavy
         component to its own efficient serializer:
  
-        * ML_Data        (MESATraining)  → nested .training_set archive
+        * ml_data        (MESATraining)  → nested .training_set archive
                                         (Parquet + joblib + Keras SavedModel)
-        * MESA_parameters (ParameterSet) → JSON .param_set file
+        * mesa_parameters (ParameterSet) → JSON .param_set file
         * All scalar / list attributes   → JSON meta file
     
         Compared to pickling the whole ActiveLearning object, this avoids
@@ -293,15 +268,15 @@ class ActiveLearning:
     
             with tempfile.TemporaryDirectory() as tmp:
     
-                # ── 1. ML_Data (MESATraining) ─────────────────────────────────────
+                # ── 1. ml_data (MESATraining) ─────────────────────────────────────
                 # save_MESA_Training already produces a self-contained zip archive;
                 # we just embed that archive inside our outer zip.
-                if self.ML_Data is not None:
-                    self.ML_Data.save_MESA_Training("ML_Data", file_path=tmp + os.sep)
+                if self.ml_data is not None:
+                    self.ml_data.save_MESA_Training("ml_data", file_path=tmp + os.sep)
     
-                # ── 2. MESA_parameters (ParameterSet) ─────────────────────────────
-                if self.MESA_parameters is not None:
-                    self.MESA_parameters.save_parameter_set(tmp + os.sep, "MESA_parameters")
+                # ── 2. mesa_parameters (ParameterSet) ─────────────────────────────
+                if self.mesa_parameters is not None:
+                    self.mesa_parameters.save_parameter_set(tmp + os.sep, "mesa_parameters")
     
                 # ── 3. observational_data DataFrame ───────────────────────────────
                 if self.observational_data is not None:
@@ -332,8 +307,6 @@ class ActiveLearning:
                         if hasattr(self.covariance, "tolist")
                         else self.covariance
                     ),
-                    "burnin":                 self.burnin,
-                    "num_samples":            self.num_samples,
                     "output_directory":       self.output_directory,
                     "obs_data_cols":          self.obs_data_cols,
                     "obs_err_cols":           self.obs_err_cols,
@@ -358,8 +331,9 @@ class ActiveLearning:
                             arc_name = os.path.relpath(abs_path, tmp)
                             zf.write(abs_path, arc_name)
  
- 
-    def read_ActiveLearning(file_path):
+
+    @classmethod
+    def (cls, file_path):
         """
         Static method that loads an ActiveLearning object from an archive written
         by the new save_ActiveLearning.  Falls back to pickle for archives created
@@ -394,15 +368,13 @@ class ActiveLearning:
                 meta = json.load(f)
     
             # Construct with the minimal positional args; we overwrite everything
-            obj = ActiveLearning(
+            obj = cls(
                 classify=meta["classify"],
                 regress=meta["regress"],
                 output_directory=meta.get("output_directory", ""),
             )
     
             obj.num_dim               = meta["num_dim"]
-            obj.burnin                = meta["burnin"]
-            obj.num_samples           = meta["num_samples"]
             obj.obs_data_cols         = meta["obs_data_cols"]
             obj.obs_err_cols          = meta["obs_err_cols"]
             obj.data_prior_scaling    = meta["data_prior_scaling"]
@@ -418,21 +390,21 @@ class ActiveLearning:
             raw_cov = meta.get("covariance")
             obj.covariance = np.array(raw_cov) if raw_cov is not None else None
     
-            # ── 2. ML_Data (MESATraining) ─────────────────────────────────────
-            ml_archive = os.path.join(tmp, "ML_Data.training_set")
+            # ── 2. ml_data (MESATraining) ─────────────────────────────────────
+            ml_archive = os.path.join(tmp, "ml_data.training_set")
             if os.path.exists(ml_archive):
                 from ActiveLearning.mesa_training import MESATraining
-                obj.ML_Data = MESATraining.read_MESA_Training(ml_archive)
+                obj.ml_data = MESATraining.read_MESA_Training(ml_archive)
             else:
-                obj.ML_Data = None
+                obj.ml_data = None
     
-            # ── 3. MESA_parameters (ParameterSet) ─────────────────────────────
-            ps_path = os.path.join(tmp, "MESA_parameters.param_set")
+            # ── 3. mesa_parameters (ParameterSet) ─────────────────────────────
+            ps_path = os.path.join(tmp, "mesa_parameters.param_set")
             if os.path.exists(ps_path):
                 from ActiveLearning.parameter_set import ParameterSet
-                obj.MESA_parameters = ParameterSet.read_parameter_set(ps_path)
+                obj.mesa_parameters = ParameterSet.read_parameter_set(ps_path)
             else:
-                obj.MESA_parameters = None
+                obj.mesa_parameters = None
     
             # ── 4. observational_data DataFrame ───────────────────────────────
             obs_path = os.path.join(tmp, "observational_data.parquet")
@@ -442,7 +414,8 @@ class ActiveLearning:
     
         return obj
             
-    def classifier_Heuristic(self, theta, method=None, factor=1):
+
+    def classifier_heuristic(self, theta, method=None, factor=1):
         """
         Compute a classification-based acquisition score for a parameter point.
 
@@ -469,8 +442,8 @@ class ActiveLearning:
         """
         score = None
         
-        if self.ML_Data.classifier:
-            prediction = self.ML_Data.classifier(np.reshape(np.array(theta), (1, len(theta))))            
+        if self.ml_data.classifier:
+            prediction = self.ml_data.classifier(np.reshape(np.array(theta), (1, len(theta))))            
             # factor = np.shape(prediction)[1] / (np.shape(prediction)[1] - 1)
             if method == None:
                 score_index = np.argmax(prediction[0])
@@ -488,7 +461,7 @@ class ActiveLearning:
             return None
 
 
-    def regressor_Heuristic(self, theta, regressor_index=0, method="EI", **kwargs):
+    def regressor_heuristic(self, theta, regressor_index=0, method="EI", **kwargs):
         """
         Compute a regression-based acquisition score using a Bayesian optimisation
         heuristic (Expected Improvement, Probability of Improvement, or Sigma).
@@ -532,10 +505,10 @@ class ActiveLearning:
             raise ValueError("Invalid value for method parameter")
             return None
         
-        if not self.ML_Data:
+        if not self.ml_data:
             return None
 
-        if not self.ML_Data.regressor:
+        if not self.ml_data.regressor:
             return None
 
         if 'permutations' in kwargs:
@@ -556,52 +529,52 @@ class ActiveLearning:
         score = 0
         
         if method == "EI":
-            data  = np.reshape(np.asarray(theta.tolist()*num_permutations), (num_permutations, len(self.ML_Data.parameter_columns)))
-            theta_prediction = np.zeros((len(self.ML_Data.regression_columns)))
-            for i in range(len(self.ML_Data.regression_columns)):
-                theta_prediction[i] = self.ML_Data.regressor[self.ML_Data.regression_columns[i]](np.reshape(theta, (1, len(self.ML_Data.parameter_columns))))
+            data  = np.reshape(np.asarray(theta.tolist()*num_permutations), (num_permutations, len(self.ml_data.parameter_columns)))
+            theta_prediction = np.zeros((len(self.ml_data.regression_columns)))
+            for i in range(len(self.ml_data.regression_columns)):
+                theta_prediction[i] = self.ml_data.regressor[self.ml_data.regression_columns[i]](np.reshape(theta, (1, len(self.ml_data.parameter_columns))))
             if self.track_error:
-                errors = np.zeros(len(self.ML_Data.regression_columns))
-                if self.ML_Data.interpolator_type == "random_forest":
-                    for i in range(len(self.ML_Data.regression_columns)):
-                        errors[i] = self.ML_Data.residual_interpolator[self.ML_Data.regression_columns[i]].predict(np.reshape(self.ML_Data.denormalise_point(theta, parameters=True), (1, len(self.ML_Data.parameter_columns))))
-                elif self.ML_Data.interpolator_type == "dnn":
-                    for i in range(len(self.ML_Data.regression_columns)):
-                        errors[i] = self.ML_Data.residual_interpolator[self.ML_Data.regression_columns[i]](np.reshape(self.ML_Data.denormalise_point(theta, parameters=True), (1, len(self.ML_Data.parameter_columns))))
+                errors = np.zeros(len(self.ml_data.regression_columns))
+                if self.ml_data.interpolator_type == "random_forest":
+                    for i in range(len(self.ml_data.regression_columns)):
+                        errors[i] = self.ml_data.residual_interpolator[self.ml_data.regression_columns[i]].predict(np.reshape(self.ml_data.denormalise_point(theta, parameters=True), (1, len(self.ml_data.parameter_columns))))
+                elif self.ml_data.interpolator_type == "dnn":
+                    for i in range(len(self.ml_data.regression_columns)):
+                        errors[i] = self.ml_data.residual_interpolator[self.ml_data.regression_columns[i]](np.reshape(self.ml_data.denormalise_point(theta, parameters=True), (1, len(self.ml_data.parameter_columns))))
                 self.error_values.append(errors)
-            group_prediction = np.zeros((num_permutations, len(self.ML_Data.regression_columns)))
-            for i in range(len(self.ML_Data.regression_columns)):
-                group_prediction[:, i] = self.ML_Data.regressor[self.ML_Data.regression_columns[i]](data, training=True).numpy().reshape((num_permutations,))
+            group_prediction = np.zeros((num_permutations, len(self.ml_data.regression_columns)))
+            for i in range(len(self.ml_data.regression_columns)):
+                group_prediction[:, i] = self.ml_data.regressor[self.ml_data.regression_columns[i]](data, training=True).numpy().reshape((num_permutations,))
 
-            denorm_theta = self.ML_Data.denormalise_regression_predictions(theta_prediction)
-            denorm_group = self.ML_Data.denormalise_regression_predictions(group_prediction)
+            denorm_theta = self.ml_data.denormalise_regression_predictions(theta_prediction)
+            denorm_group = self.ml_data.denormalise_regression_predictions(group_prediction)
             mu_group, std_group = np.mean(denorm_group, axis=0), np.std(denorm_group, axis=1)
-            for i in range(len(self.ML_Data.regression_columns)):
+            for i in range(len(self.ml_data.regression_columns)):
                 numerator = mu_group[i] - denorm_theta[i] - xi_ei
                 score += numerator * stats.norm.cdf(numerator / std_group[i]) + std_group[i] * stats.norm.pdf(numerator / std_group[i])
                 
             
         elif method == "PI":
-            data  = np.reshape(np.asarray(theta.tolist()*num_permutations), (num_permutations, len(self.ML_Data.parameter_columns)))
-            theta_prediction = self.ML_Data.regressor(np.reshape(theta, (1, len(self.ML_Data.parameter_columns))))
-            group_prediction = self.ML_Data.regressor(data, training=True).numpy()
-            denorm_theta = self.ML_Data.denormalise_regression_predictions(theta_prediction)[0]
-            denorm_group = self.ML_Data.denormalise_regression_predictions(group_prediction)
+            data  = np.reshape(np.asarray(theta.tolist()*num_permutations), (num_permutations, len(self.ml_data.parameter_columns)))
+            theta_prediction = self.ml_data.regressor(np.reshape(theta, (1, len(self.ml_data.parameter_columns))))
+            group_prediction = self.ml_data.regressor(data, training=True).numpy()
+            denorm_theta = self.ml_data.denormalise_regression_predictions(theta_prediction)[0]
+            denorm_group = self.ml_data.denormalise_regression_predictions(group_prediction)
             mu_group, std_group = np.mean(denorm_group, axis=1), np.std(denorm_group, axis=1)
             for i in range(len(self.regression_columns)):
                 score += np.log(stats.norm.cdf((mu_group[i] - denorm_theta[i])/std_group[i]))
             
         elif method == "sigma":
-            data  = np.reshape(np.asarray(theta.tolist()*num_permutations), (num_permutations, len(self.ML_Data.parameter_columns)))
-            prediction = self.ML_Data.regressor(data, training=True).numpy()
-            denorm_prediction = self.ML_Data.denormalise_regression_predictions(prediction)
+            data  = np.reshape(np.asarray(theta.tolist()*num_permutations), (num_permutations, len(self.ml_data.parameter_columns)))
+            prediction = self.ml_data.regressor(data, training=True).numpy()
+            denorm_prediction = self.ml_data.denormalise_regression_predictions(prediction)
             std_devs = np.std(prediction, axis=0)
             score = np.mean(std_devs / accepted_error)
 
         return score
 
 
-    def evaluate_Heuristic(self, theta, active_class, classify=False, regress=False, classifier_method=None, regressor_method=None, regressor_kwargs={}, class_scale=1, regress_scale=1.0):
+    def evaluate_heuristic(self, theta, active_class, classify=False, regress=False, classifier_method=None, regressor_method=None, regressor_kwargs={}, class_scale=1, regress_scale=1.0):
         """
         Combine classifier and regressor acquisition scores into a single heuristic
         value used to guide MCMC sampling toward informative regions.
@@ -617,12 +590,12 @@ class ActiveLearning:
         regress : bool, optional
             If True, include the regression heuristic score (default False).
         classifier_method : str or None, optional
-            Method forwarded to classifier_Heuristic (default None).
+            Method forwarded to classifier_heuristic (default None).
         regressor_method : str or None, optional
-            Method forwarded to regressor_Heuristic; if None, regression score is
+            Method forwarded to regressor_heuristic; if None, regression score is
             not computed even when regress=True.
         regressor_kwargs : dict, optional
-            Additional keyword arguments forwarded to regressor_Heuristic.
+            Additional keyword arguments forwarded to regressor_heuristic.
         class_scale : float, optional
             Weight applied to the log classification score (default 1).
         regress_scale : float, optional
@@ -635,10 +608,10 @@ class ActiveLearning:
             None if neither classify nor regress is True.
         """
         if classify:
-            class_score = active_class.classifier_Heuristic(theta, method=classifier_method)
+            class_score = active_class.classifier_heuristic(theta, method=classifier_method)
         if regress:
             if regressor_method is not None:
-                regress_score = active_class.regressor_Heuristic(theta, method=regressor_method, **regressor_kwargs)                
+                regress_score = active_class.regressor_heuristic(theta, method=regressor_method, **regressor_kwargs)                
                 
         if classify and regress:
             if class_score == 0:
@@ -733,11 +706,11 @@ class ActiveLearning:
             rejected by the classifier.
         """
         if classify:
-            result_class = np.argmax(self.ML_Data.classifier(np.asarray([theta])))
+            result_class = np.argmax(self.ml_data.classifier(np.asarray([theta])))
             if result_class not in accepted_classes:
                 return -np.inf
 
-        prior = self.MESA_parameters.collective_prior(self.ML_Data.denormalise_point(theta, parameters=True), uniform_override=uniform_override)
+        prior = self.mesa_parameters.collective_prior(self.ml_data.denormalise_point(theta, parameters=True), uniform_override=uniform_override)
         
         if prior == -np.inf:
             return -np.inf
@@ -779,12 +752,12 @@ class ActiveLearning:
         """
         log_likelihood = 0
                 
-        if self.ML_Data.regressor is not None:
-            output_values = np.zeros((len(self.ML_Data.regression_columns)))
+        if self.ml_data.regressor is not None:
+            output_values = np.zeros((len(self.ml_data.regression_columns)))
             for i in range(len(output_values)):
-                output_values[i] = self.ML_Data.regressor[self.ML_Data.regression_columns[i]](np.reshape(theta, (1, len(self.ML_Data.parameter_columns))))
-            output_values = self.ML_Data.denormalise_regression_predictions(output_values)
-            output_values = self.ML_Data.apply_regression_uncertainty(output_values, uncertainty_method)
+                output_values[i] = self.ml_data.regressor[self.ml_data.regression_columns[i]](np.reshape(theta, (1, len(self.ml_data.parameter_columns))))
+            output_values = self.ml_data.denormalise_regression_predictions(output_values)
+            output_values = self.ml_data.apply_regression_uncertainty(output_values, uncertainty_method)
             if correction_function is not None:
                 if correction_function_kwargs is not None:
                     output_values = correction_function(output_values, **correction_function_kwargs)
@@ -797,52 +770,120 @@ class ActiveLearning:
         else:
             return None      
 
+
+    def find_new_points(self, option, num_points=1000, heuristic_kwargs={}, method_kwargs={}):
+        """
+
+
+        """
+        if option == 'pt-mcmc':
+            sampler = self.run_PT_sampler()
+            new_datapoints = self.evaluate_chains(num_points) 
+        elif option == 'SHGO':
+            new_datapoints = self.run_shgo(num_points, heuristic_kwargs, **method_kwargs)
+        elif option == 'grid_search':
+            new_datapoints = self.grid_search(num_points, heuristic_kwargs, **method_kwargs)
+        elif option == 'random_search':
+            new_datapoints = self.random_search(num_points, heuristic_kwargs)
+        elif option == 'adaptive_mesh_refinement_tree':
+            new_datapoints = self.mesh_refinement(num_points, heuristic_kwargs, **method_kwargs)
+        elif option == 'sequential_monte_carlo':
+            new_datapoints = self.SMC(num_points, heuristic_kwargs, **method_kwargs)
+            continue
+
+        return new_datapoints
+
     
-    def run_PT_sampler(self, final=False, prior_kwargs={}, likelihood_kwargs={}, likelihood_func=None):
+    def run_shgo(self, num_points, n_simplical_complex_points=100, sampling_method='simplical', workers=-1, heuristic_kwargs):
+        """
+
+
+        """
+        bounds = self.mesa_parameters.get_bounds()
+        args = kwargs_to_args(evaluate_heuristic, heuristic_kwargs)
+
+        result = shgo(evaluate_heuristic, bounds=bounds, args=args)
+        points = results.xl[:num_points]
+        return points
+
+
+    def grid_search(self, num_points, steps_per_dim=[], generate_kwargs={}):
+        """
+
+
+        """
+        if len(steps_per_dim) != self.mesa_parameters.num_continuous_parameters():
+            raise ValueError("Number of ratios must be the same as the number of continuous parameters")
+
+        if not steps_per_dim:
+            steps_per_dim = int(num_points**1/self.num_dim)
+
+        if math.prod(steps_per_dim) != num_points:
+            raise ValueError("The number of samples must equal the product of the steps per dim")
+
+        x = self.mesa_parameters.generate_datapoints(num_points, ratio_of_steps, **generate_kwargs)
+    
+
+    def random_search(self, num_points, method="uniform", validate=False):
+        """
+
+
+        """
+        if method = "uniform":
+            bounds = self.mesa_parameters.get_bounds()
+            names = self.mesa_parameters.get_param_names()
+            param_dict = {}
+            for name, bound in zip(names, bounds):
+                param_dict[name] = np.random.uniform(bound[0], bound[1], num_points)
+
+        return recursive_pairing(param_dict)
+        
+        
+    
+    def run_PT_sampler(self, init_pos, covariance, burnin=5000, num_samples=10000, prior_kwargs={}, likelihood_kwargs={}, likelihood_func=None):
         """
         Initialise and run a Parallel-Tempering MCMC sampler (PTMCMCSampler).
 
-        In active-learning mode (final=False) the sampler uses evaluate_Heuristic
-        as its log-likelihood and collective_Data_Prior as its log-prior, guiding
-        new simulations toward informative parameter regions.
+        The sampler uses evaluate_heuristic as its log-likelihood and
+        collective_Data_Prior as its log-prior, guiding new simulations toward
+        informative parameter regions.
 
         In final mode (final=True) the sampler uses the supplied likelihood_func
         and log_Prior, performing a conventional posterior inference run.
 
         Parameters
         ----------
-        final : bool, optional
-            If False (default), run the acquisition heuristic sampler.
-            If True, run a final posterior sampler using likelihood_func.
+        init_pos : array-like
+            
+        covariance :
+
+        burnin : int
+            Number of burn-in steps (default 5000).    
+        num_samples : int
+            Total number of MCMC samples to draw (default 10000).
         prior_kwargs : dict, optional
             Keyword arguments forwarded to the log-prior function.
         likelihood_kwargs : dict, optional
             Keyword arguments forwarded to the log-likelihood function.
         likelihood_func : callable or None, optional
             Observational likelihood function; required when final=True.
-
         Returns
         -------
-        None
-            Returns None early if MESA_parameters is unset, or if final=True and
-            no likelihood_func is provided.
+        sampler : PTSampler
+            The sampler in its final state
         """
         save_freq = int(self.num_samples // 100)
         thinning = 1
-        if self.MESA_parameters is None:
+        if self.mesa_parameters is None:
             return None
-        elif final:
-            if likelihood_func is None:
-                print("Error no likelihood function assigned")
-                return None
-            self.sampler = PTMCMCSampler.PTSampler(self.num_dim, logl=likelihood_func, logp=self.log_Prior, cov=self.covariance, loglkwargs=likelihood_kwargs, logpkwargs=prior_kwargs, outDir=self.output_directory)
-            self.sampler.sample(p0=self.init_pos, Niter=self.num_samples, burn=self.burnin, isave=save_freq, thin=thinning)
         else:
-            self.sampler = PTMCMCSampler.PTSampler(self.num_dim, logl=self.evaluate_Heuristic, logp=self.collective_Data_Prior, cov=self.covariance, loglkwargs=likelihood_kwargs, logpkwargs=prior_kwargs, outDir=self.output_directory)
-            self.sampler.sample(p0=self.init_pos, Niter=self.num_samples, burn=self.burnin, isave=save_freq, thin=thinning)
+            sampler = PTMCMCSampler.PTSampler(self.num_dim, logl=self.evaluate_heuristic, logp=self.collective_Data_Prior, cov=covariance, loglkwargs=likelihood_kwargs, logpkwargs=prior_kwargs, outDir=self.output_directory)
+            sampler.sample(p0=init_pos, Niter=num_samples, burn=burnin, isave=save_freq, thin=thinning)
+
+        return sampler
 
 
-    def evaluate_chains(self, method="random", num_samples=1, chains_dir=None, **kwargs):
+    def evaluate_chains(self, sampler, method="random", num_points=1, chains_dir=None, **kwargs):
         """
         Extract new candidate parameter points from the MCMC chain for the next
         active-learning iteration.
@@ -851,12 +892,12 @@ class ActiveLearning:
         ----------
         method : {'random', 'kde_individual', 'kde_ndim'}, optional
             Sampling strategy:
-            - 'random' (default): draw num_samples points at random from each
+            - 'random' (default): draw num_points points at random from each
             marginal chain dimension and de-normalise them.
             - 'kde_individual': fit a 1-D KDE per dimension, locate local maxima
             and minima, then allocate samples proportionally to peak areas.
             - 'kde_ndim': fit an N-dimensional KDE (not yet fully implemented).
-        num_samples : int, optional
+        num_points : int, optional
             Number of new candidate points to return (default 1).
         chains_dir : str or None, optional
             Path to a saved chain file (currently unused; reserved for future use).
@@ -865,25 +906,28 @@ class ActiveLearning:
 
         Returns
         -------
-        np.ndarray of shape (num_samples, num_dim) or None
+        np.ndarray of shape (num_points, num_dim) or None
             De-normalised parameter points for the next simulation batch.
             Returns None or partial results for unfinished method branches.
         """
         data = self.sampler._chain
-        new_points = np.zeros((num_samples, self.num_dim))
+        new_points = np.zeros((num_points, self.num_dim))
 
+        # TODO: Correct list vs dict indexing of mesa_parameters
         if method == "kde_individual":
             kde_kernels = []        
         
             domain_resolution = 1000
             domains = np.zeros((domain_resolution, self.num_dim))
             ranges = np.zeros((domain_resolution, self.num_dim))
+
+            names = mesa_parameters.get_param_names()
             
             for i in range(self.num_dim):
-                if MESA_parameters.parameters[i].continuous:
-                    domains[:, i] = MESA_parameters.parameters[i].generate_grid(self.domain_resolution)
+                if mesa_parameters.parameters[names[i]].continuous:
+                    domains[:, i] = mesa_parameters.parameters[names[i]].generate_grid(self.domain_resolution)
                 else:
-                    domains[:, i] = np.random.choice(MESA_parameters.parameters[i].discrete_steps)
+                    domains[:, i] = np.random.choice(mesa_parameters.parameters[names[i]].discrete_steps)
 
                 kde_kernels.append(stats.gaussian_kde(data[:, i]))
                 ranges[:, i] = np.reshape(kde_kernels[-1](domains[:, i]).T, domains[:, i].shape)
@@ -919,15 +963,15 @@ class ActiveLearning:
                     
                     for j in range(len(areas)):
                         rel_area = areas[j] / area_sum
-                        pts_per_area[j] = np.round(rel_area * (num_samples - len(maxima)))
+                        pts_per_area[j] = np.round(rel_area * (num_points - len(maxima)))
 
-                    pt_difference = num_samples - (np.sum(pts_per_area) + len(maxima))
+                    pt_difference = num_points - (np.sum(pts_per_area) + len(maxima))
 
                     area_args_sort = np.argsort(pts_per_area)
 
                     
                     if pt_difference > 0:
-                        pts_per_area[np.argmax(pts_per_area)] += num_samples - np.sum(pts_per_area) - len(maxima)
+                        pts_per_area[np.argmax(pts_per_area)] += num_points - np.sum(pts_per_area) - len(maxima)
                     elif pt_difference < 0:
                         for j in range(pt_difference):
                             pts_per_area[area_args_sort[j]] -= 1
@@ -949,23 +993,24 @@ class ActiveLearning:
             domains = np.zeros((domain_resolution, self.num_dim))
 
             for i in range(self.num_dim):
-                if MESA_parameters.parameters[i].continuous:
-                    domains[:, i] = MESA_parameters.parameters[i].generate_grid(self.domain_resolution)
+                if mesa_parameters.parameters[i].continuous:
+                    domains[:, i] = mesa_parameters.parameters[i].generate_grid(self.domain_resolution)
 
             nd_curve = np.reshape(nd_kernel(domains.T))
 
         elif method == "random":
             for i in range(self.num_dim):
-                new_points[:, i] = self.ML_Data.denormalise_point(np.asarray(np.random.choice(np.asarray(data[:, i]), num_samples)), chains=True, index=i)
+                new_points[:, i] = np.asarray(np.random.choice(np.asarray(data[:, i]), num_samples))
                 
             return new_points
 
+        
 def test():
     param_set = ParameterSet.read_parameter_set('test.param_set')
     data = pd.read_csv('testData.csv')
     data = data[['ID', 'flag', 'mass', 'helium', 'metallicity', 'IBand', 'Ierr', 'VI', 'VIerr']]
-    ML_Data_test = MESATraining.read_MESA_Training("test.training_set")
-    active_kwargs = {'ML_Data': ML_Data_test, 'Param_Data': param_set}
+    ml_data_test = MESATraining.read_MESA_Training("test.training_set")
+    active_kwargs = {'ml_data': ml_data_test, 'param_data': param_set}
     test_Active = ActiveLearning(True, True, kwargs=active_kwargs)
     return None
 
@@ -973,3 +1018,7 @@ def test():
 if __name__ == "__main__":
     test()
     print("----------------------")
+
+
+
+

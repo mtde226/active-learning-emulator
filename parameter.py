@@ -64,7 +64,7 @@ class Parameter:
         -------
         None
         """
-        
+    
         self.param_name = name
         self.l_bound = lower
         self.u_bound = upper

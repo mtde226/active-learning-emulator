@@ -1069,7 +1069,7 @@ class MESATraining:
         """
         if not self.parameter_columns:
             try:
-                self.set_parameter_column([parameter.name for parameter in self.MESA_Parameters.parameters])
+                self.set_parameter_column([parameter.name for parameter in self.MESA_Parameters])
             except:
                 return None
 
@@ -1213,7 +1213,7 @@ class MESATraining:
         """        
         if not self.parameter_columns:
             try:
-                self.set_parameter_columns([parameter.name for parameter in self.MESA_Parameters.parameters])
+                self.set_parameter_columns([parameter.name for parameter in self.MESA_Parameters])
             except:
                 return None
 
